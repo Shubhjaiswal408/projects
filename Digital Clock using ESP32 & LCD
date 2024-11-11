@@ -1,0 +1,149 @@
+/*
+ * Project: Wi-Fi Controlled Alarm with LCD and NTP Time ESP32
+ * Author: Shubh Jaiswal
+ * 
+ * Description:
+ * This code connects an ESP32 to a Wi-Fi network and uses an LCD to display the current time and alarm time.
+ * It also includes an HTTP server to set the alarm time via a web interface.
+ * The device synchronizes time using an NTP server and triggers an LED alarm at the specified time.
+ * 
+ * Network Credentials:
+ * - WiFi SSID: Ssid
+ * - WiFi Password: pass
+ * 
+ * LCD Pin Configuration:
+ * - RS: GPIO 15
+ * - Enable: GPIO 2
+ * - D4: GPIO 4
+ * - D5: GPIO 5
+ * - D6: GPIO 18
+ * - D7: GPIO 19
+ * 
+ * NTP Server:
+ * - Server: pool.ntp.org
+ * - Timezone Offset: UTC +5:30 (India)
+ * - Update Interval: 60 seconds
+ * 
+ * Hardware:
+ * - LED Pin: GPIO 21 (used to indicate alarm activation)
+ * 
+ * Usage:
+ * 1. Connect to the specified Wi-Fi network.
+ * 2. Access the web interface at the device's IP to set the alarm time.
+ * 3. The alarm LED or buzzer will activate when the current time matches the alarm time.
+ */
+
+
+#include <WiFi.h>
+#include <LiquidCrystal.h>
+#include <NTPClient.h>
+#include <WiFiUdp.h>
+#include <ESPAsyncWebServer.h>
+
+// Replace with your network credentials
+const char* ssid = "ssid";
+const char* password = "pass";
+
+// Set up LCD (using GPIO pins as specified)
+LiquidCrystal lcd(15, 2, 4, 5, 18, 19);  // Updated to use GPIO 15, 2, 4, 5, 18, 19
+
+// NTP setup
+WiFiUDP udp;
+NTPClient timeClient(udp, "pool.ntp.org", 19800, 60000);  // Offset for India (UTC +5:30)
+
+AsyncWebServer server(80);  // Web server on port 80
+
+// Alarm time settings
+int alarmHour = 7;  // Set the default alarm hour (24-hour format)
+int alarmMinute = 0;  // Set the default alarm minute
+
+// LED connected to ESP32 pin
+const int ledPin = 21;  // Updated to GPIO 21 for the alarm LED
+
+void setup() {
+  // Start the Serial Monitor for debugging
+  Serial.begin(115200);
+  
+  // Connect to Wi-Fi
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.println("Connecting to WiFi...");
+  }
+  Serial.println("Connected to WiFi");
+
+  // Start the LCD
+  lcd.begin(16, 2);
+  
+  // Start NTP client
+  timeClient.begin();
+
+  // Set up LED
+  pinMode(ledPin, OUTPUT);
+  digitalWrite(ledPin, LOW);
+
+  // Set up the web server to control the alarm time
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+    String html = "<html><body>";
+    html += "<h1>Set Alarm</h1>";
+    html += "<form action='/set_alarm' method='get'>";
+    html += "Hour (0-23): <input type='number' name='hour' value='" + String(alarmHour) + "' min='0' max='23'><br>";
+    html += "Minute (0-59): <input type='number' name='minute' value='" + String(alarmMinute) + "' min='0' max='59'><br>";
+    html += "<input type='submit' value='Set Alarm'>";
+    html += "</form></body></html>";
+    request->send(200, "text/html", html);
+  });
+
+  server.on("/set_alarm", HTTP_GET, [](AsyncWebServerRequest *request){
+    if (request->hasParam("hour") && request->hasParam("minute")) {
+      alarmHour = request->getParam("hour")->value().toInt();
+      alarmMinute = request->getParam("minute")->value().toInt();
+    }
+    String response = "<html><body><h1>Alarm Set</h1><p>Alarm time: " + String(alarmHour) + ":" + String(alarmMinute) + "</p>";
+    response += "<a href='/'>Go Back</a></body></html>";
+    request->send(200, "text/html", response);
+  });
+
+  // Start the server
+  server.begin();
+}
+
+void loop() {
+  // Update time from NTP server
+  timeClient.update();
+
+  // Get current hour and minute
+  int currentHour = timeClient.getHours();
+  int currentMinute = timeClient.getMinutes();
+  
+  // Display the current time on the first line of the LCD
+  lcd.setCursor(0, 0);
+  lcd.print("Time: ");
+  if (currentHour < 10) lcd.print("0");  // Add leading zero if needed
+  lcd.print(currentHour);
+  lcd.print(":");
+  if (currentMinute < 10) lcd.print("0");  // Add leading zero if needed
+  lcd.print(currentMinute);
+
+  // Display the alarm time on the second line of the LCD
+  lcd.setCursor(0, 1);
+  lcd.print("Alarm: ");
+  if (alarmHour < 10) lcd.print("0");  // Add leading zero if needed
+  lcd.print(alarmHour);
+  lcd.print(":");==
+  if (alarmMinute < 10) lcd.print("0");  // Add leading zero if needed
+  lcd.print(alarmMinute);
+  
+  Serial.println(currentHour);
+  Serial.println(currentMinute);
+  
+  // Check if it's time for the alarm
+  if (currentHour == alarmHour && currentMinute == alarmMinute) {
+    digitalWrite(ledPin, HIGH);  // Turn on LED for alarm
+    delay(1000);  // LED on for 1 second
+    digitalWrite(ledPin, LOW);  // Turn off LED
+  }
+===
+  // Small delay for LCD refresh
+  delay(1000);
+}
