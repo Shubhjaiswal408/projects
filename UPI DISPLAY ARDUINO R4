@@ -1,1 +1,363 @@
-. 
+/*
+ * LED Matrix Payment Display System
+ * 
+ * This code implements a payment notification system using Arduino's LED Matrix,
+ * displaying payment amounts received from Adafruit IO MQTT in both digits and words.
+ * 
+ * Copyright (c) 2025 Shubh Jaiswal 
+ * All rights reserved.
+ */
+
+#include "Arduino_LED_Matrix.h"
+#include <WiFiS3.h>
+#include "Adafruit_MQTT.h"
+#include "Adafruit_MQTT_Client.h"
+#include <ArduinoJson.h>
+
+// WiFi and MQTT credentials
+#define WIFI_SSID       ""
+#define WIFI_PASSWORD   ""
+#define AIO_SERVER      ""
+#define AIO_SERVERPORT  1883
+#define AIO_USERNAME    ""
+#define AIO_KEY         ""
+
+// LED Matrix setup
+ArduinoLEDMatrix matrix;
+uint8_t frame[8][12]; // 8x12 LED matrix frame
+
+// MQTT setup
+WiFiClient client;
+Adafruit_MQTT_Client mqtt(&client, AIO_SERVER, AIO_SERVERPORT, AIO_USERNAME, AIO_KEY);
+Adafruit_MQTT_Subscribe amountFeed = Adafruit_MQTT_Subscribe(&mqtt, AIO_USERNAME "/feeds/amount");
+
+// Queue for payment amounts
+float amountQueue[10];
+int queueStart = 0;
+int queueEnd = 0;
+bool isDisplaying = false;
+unsigned long displayStartTime = 0;
+const unsigned long displayDuration = 5000; // 5 seconds display time
+
+// Font Data: 0-9, A-Z, a-z, space, ₹ (as RS)
+uint8_t fonts[][8] = {
+    // 0-9
+    {0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b10001, 0b01110}, // 0
+    {0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110}, // 1
+    {0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111}, // 2
+    {0b11110, 0b00001, 0b00010, 0b00110, 0b00001, 0b00001, 0b10001, 0b01110}, // 3
+    {0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010, 0b00010}, // 4
+    {0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b10001, 0b01110}, // 5
+    {0b01110, 0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b10001, 0b01110}, // 6
+    {0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000, 0b01000}, // 7
+    {0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b10001, 0b01110}, // 8
+    {0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b10001, 0b01110}, // 9
+
+    // A-Z (10 to 35)
+    {0b00100, 0b01010, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001}, // A
+    {0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b10001, 0b11110}, // B
+    {0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110}, // C
+    {0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110}, // D
+    {0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000, 0b11111}, // E
+    {0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000, 0b10000}, // F
+    {0b01110, 0b10001, 0b10000, 0b10000, 0b10111, 0b10001, 0b10001, 0b01110}, // G
+    {0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001, 0b10001}, // H
+    {0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b11111}, // I
+    {0b00001, 0b00001, 0b00001, 0b00001, 0b00001, 0b10001, 0b10001, 0b01110}, // J
+    {0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001, 0b10001}, // K
+    {0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111}, // L
+    {0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001, 0b10001}, // M
+    {0b10001, 0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001}, // N
+    {0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110}, // O
+    {0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000, 0b10000}, // P
+    {0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101, 0b00011}, // Q
+    {0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001, 0b10001}, // R
+    {0b01110, 0b10001, 0b10000, 0b01110, 0b00001, 0b00001, 0b10001, 0b01110}, // S
+    {0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100}, // T
+    {0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110}, // U
+    {0b10001, 0b10001, 0b10001, 0b01010, 0b01010, 0b00100, 0b00100, 0b00100}, // V
+    {0b10001, 0b10001, 0b10101, 0b10101, 0b10101, 0b11011, 0b11011, 0b10001}, // W
+    {0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b01010, 0b10001, 0b10001}, // X
+    {0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100}, // Y
+    {0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b10000, 0b11111}, // Z
+
+    // a-z (36 to 61)
+    {0b00000, 0b00000, 0b01110, 0b00001, 0b01111, 0b10001, 0b10001, 0b01111}, // a
+    {0b10000, 0b10000, 0b10110, 0b11001, 0b10001, 0b10001, 0b11001, 0b10110}, // b
+    {0b00000, 0b00000, 0b01110, 0b10001, 0b10000, 0b10000, 0b10001, 0b01110}, // c
+    {0b00001, 0b00001, 0b01101, 0b10011, 0b10001, 0b10001, 0b10011, 0b01101}, // d
+    {0b00000, 0b00000, 0b01110, 0b10001, 0b11111, 0b10000, 0b10001, 0b01110}, // e
+    {0b00110, 0b01001, 0b01000, 0b11110, 0b01000, 0b01000, 0b01000, 0b01000}, // f
+    {0b00000, 0b01111, 0b10001, 0b10001, 0b01111, 0b00001, 0b10001, 0b01110}, // g
+    {0b10000, 0b10000, 0b10110, 0b11001, 0b10001, 0b10001, 0b10001, 0b10001}, // h
+    {0b00100, 0b00000, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110}, // i
+    {0b00010, 0b00000, 0b00110, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100}, // j
+    {0b10000, 0b10000, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001}, // k
+    {0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110}, // l
+    {0b00000, 0b00000, 0b11010, 0b10101, 0b10101, 0b10101, 0b10101, 0b10101}, // m
+    {0b00000, 0b00000, 0b10110, 0b11001, 0b10001, 0b10001, 0b10001, 0b10001}, // n
+    {0b00000, 0b00000, 0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110}, // o
+    {0b00000, 0b00000, 0b10110, 0b11001, 0b10001, 0b11001, 0b10110, 0b10000}, // p
+    {0b00000, 0b00000, 0b01101, 0b10011, 0b10001, 0b10011, 0b01101, 0b00001}, // q
+    {0b00000, 0b00000, 0b10110, 0b11001, 0b10000, 0b10000, 0b10000, 0b10000}, // r
+    {0b00000, 0b00000, 0b01111, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110}, // s
+    {0b01000, 0b01000, 0b11110, 0b01000, 0b01000, 0b01001, 0b01001, 0b00110}, // t
+    {0b00000, 0b00000, 0b10001, 0b10001, 0b10001, 0b10011, 0b01101, 0b00001}, // u
+    {0b00000, 0b00000, 0b10001, 0b10001, 0b01010, 0b01010, 0b00100, 0b00100}, // v
+    {0b00000, 0b00000, 0b10001, 0b10001, 0b10101, 0b10101, 0b11011, 0b10001}, // w
+    {0b00000, 0b00000, 0b10001, 0b01010, 0b00100, 0b00100, 0b01010, 0b10001}, // x
+    {0b00000, 0b00000, 0b10001, 0b10001, 0b01111, 0b00001, 0b10001, 0b01110}, // y
+    {0b00000, 0b00000, 0b11111, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111}, // z
+    {0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000}, // space
+    {0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00100, 0b00100}, // dot (.)
+};
+
+// Function declarations
+void scroll_text(const char* str, int repeat = 1, int delay_ms = 100);
+String numberToWordsWithPaise(int rupees, int paise);
+String numberToWords(long num);
+void reconnectMQTT();
+void displayAmount(float amount);
+
+void setup() {
+    Serial.begin(115200);
+    delay(10);
+    
+    // Initialize LED matrix
+    matrix.begin();
+    
+    // Connect to WiFi
+    Serial.println("Connecting to WiFi...");
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(500);
+        Serial.print(".");
+    }
+    Serial.println(" connected!");
+    
+    // Setup MQTT subscription
+    mqtt.subscribe(&amountFeed);
+    
+    // Connect to MQTT server
+    if (!mqtt.connected()) {
+        reconnectMQTT();
+    }
+    
+    // Display startup message
+    scroll_text("Ready", 1, 100);
+}
+
+void loop() {
+    // Ensure MQTT connection
+    if (!mqtt.connected()) {
+        reconnectMQTT();
+    }
+    
+    // Process incoming MQTT packets 
+    //mqtt.processPackets(100);
+
+    // Check for new messages
+    Adafruit_MQTT_Subscribe *subscription;
+    while ((subscription = mqtt.readSubscription(100))) {
+        if (subscription == &amountFeed) {
+            Serial.println("\nMessage received:");
+            Serial.println((char *)amountFeed.lastread);
+
+            // Parse JSON data
+            StaticJsonDocument<1536> doc;
+            DeserializationError error = deserializeJson(doc, (char *)amountFeed.lastread);
+            
+            if (error) {
+                Serial.print("JSON parse error: ");
+                Serial.println(error.f_str());
+            } else {
+                Serial.println("JSON parsed successfully.");
+                
+                // Extract amount and convert to rupees
+                int paiseAmount = doc["payment"]["entity"]["amount"];
+                float rupees = paiseAmount / 100.0;
+
+                // Enqueue the amount
+                int nextEnd = (queueEnd + 1) % 10;
+                if (nextEnd != queueStart) {
+                    amountQueue[queueEnd] = rupees;
+                    queueEnd = nextEnd;
+                    Serial.print("Queued ₹");
+                    Serial.println(rupees, 2);
+                } else {
+                    Serial.println("Queue full! Dropping payment.");
+                }
+            }
+        }
+    }
+
+    // Display next amount if not currently displaying
+    if (!isDisplaying && queueStart != queueEnd) {
+        float nextAmount = amountQueue[queueStart];
+        queueStart = (queueStart + 1) % 10;
+
+        Serial.print("Displaying ₹");
+        Serial.println(nextAmount, 2);
+
+        // Display the amount on the LED matrix
+        displayAmount(nextAmount);
+
+        isDisplaying = true;
+        displayStartTime = millis();
+    }
+
+    // Reset display flag after time
+    if (isDisplaying && millis() - displayStartTime > displayDuration) {
+        isDisplaying = false;
+    }
+}
+
+// Display amount on LED matrix
+void displayAmount(float amount) {
+    int rupees = (int)amount;
+    int paise = (int)((amount - rupees) * 100 + 0.5); // rounding
+
+    // Prepare formatted amount string with Rupee symbol
+    String numberStr = "Rs " + String(rupees) + "." + (paise < 10 ? "0" : "") + String(paise);
+    
+    // Generate amount in words
+    String words = numberToWordsWithPaise(rupees, paise);
+
+    // Display amount in digits
+    scroll_text(numberStr.c_str(), 1, 150);
+    delay(500);
+    
+    // Display amount in words
+    scroll_text(words.c_str(), 1, 150);
+}
+
+// Simple scroll display
+void scroll_text(const char* str, int repeat, int delay_ms) {
+    const int charWidth = 5, charGap = 1;
+    const int leadBlank = 12, trailBlank = 12;
+
+    int len = strlen(str);
+    int totalCols = leadBlank + len * (charWidth + charGap) + trailBlank;
+
+    uint8_t virtualFrame[8][300] = {0};
+    int offset = leadBlank;
+
+    for (int i = 0; i < len; i++) {
+        char c = str[i];
+        int index = -1;
+        if (c >= '0' && c <= '9') index = c - '0';
+        else if (c >= 'A' && c <= 'Z') index = c - 'A' + 10;
+        else if (c >= 'a' && c <= 'z') index = c - 'a' + 36;
+        else if (c == ' ') index = 62;
+        else if (c == '.') index = 63;
+
+        if (index == -1) continue;
+
+        for (int row = 0; row < 8; row++) {
+            uint8_t bits = fonts[index][row];
+            for (int col = 0; col < charWidth; col++) {
+                virtualFrame[row][offset + col] = (bits >> (4 - col)) & 0x01;
+            }
+        }
+        offset += (charWidth + charGap);
+    }
+
+    for (int r = 0; r < repeat; r++) {
+        for (int o = 0; o < totalCols - 12; o++) {
+            for (int row = 0; row < 8; row++)
+                for (int col = 0; col < 12; col++)
+                    frame[row][col] = virtualFrame[row][col + o];
+            matrix.renderBitmap(frame, 8, 12);
+            delay(delay_ms);
+        }
+    }
+}
+
+String numberToWordsWithPaise(int rupees, int paise) {
+    String result = "";
+
+    // Convert rupees to words
+    if (rupees > 0) {
+        result += numberToWords(rupees) + " rupees";
+    }
+
+    // Convert paise to words
+    if (paise > 0) {
+        if (rupees > 0) result += " and ";  // Adds "and" between rupees and paise
+        result += numberToWords(paise) + " paise";
+    }
+
+    // Handle case where both rupees and paise are 0
+    if (rupees == 0 && paise == 0) result = "zero rupees";  // Special case for zero
+
+    return result;
+}
+String numberToWords(long num) {
+    if (num == 0) return "zero";
+
+    String words = "";
+    String units[] = {"", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"};
+    String teens[] = {"ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", 
+                      "sixteen", "seventeen", "eighteen", "nineteen"};
+    String tens[]  = {"", "", "twenty", "thirty", "forty", "fifty", 
+                      "sixty", "seventy", "eighty", "ninety"};
+    String places[] = {"", "thousand", "lakh", "crore"};
+
+    auto twoDigits = [&](int n) -> String {
+        if (n < 10) return units[n];
+        else if (n < 20) return teens[n - 10];
+        else return tens[n / 10] + (n % 10 ? " " + units[n % 10] : "");
+    };
+
+    int parts[5] = {0};
+    parts[0] = num % 1000;
+    num /= 1000;
+    parts[1] = num % 100;
+    num /= 100;
+    parts[2] = num % 100;
+    num /= 100;
+    parts[3] = num % 100;
+
+    for (int i = 3; i >= 1; i--) {
+        if (parts[i]) {
+            words += twoDigits(parts[i]) + " " + places[i] + " ";
+        }
+    }
+
+    int hundreds = parts[0] / 100;
+    int remainder = parts[0] % 100;
+    if (hundreds) {
+        words += units[hundreds] + " hundred ";
+        if (remainder) words += "and ";
+    }
+    if (remainder) {
+        words += twoDigits(remainder) + " ";
+    }
+
+    words.trim();
+    return words;
+}
+
+void reconnectMQTT() {
+    int8_t ret;
+    
+    Serial.print("Connecting to MQTT... ");
+    
+    uint8_t retries = 3;
+    while ((ret = mqtt.connect()) != 0) {
+        Serial.println(mqtt.connectErrorString(ret));
+        Serial.println("Retrying MQTT connection...");
+        mqtt.disconnect();
+        delay(5000);  // Wait 5 seconds
+        retries--;
+        if (retries == 0) {
+            Serial.println("MQTT connection failed, will try again later");
+            return;
+        }
+    }
+    
+    Serial.println("MQTT connected!");
+    
+    // Re-subscribe to ensure we receive updates
+    mqtt.subscribe(&amountFeed);
+}
